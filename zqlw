@@ -1,0 +1,147 @@
+# 初始化项目
+mkdir photo-voting-app
+cd photo-voting-app
+npm init -y
+
+# 安装所需依赖
+npm install express mongoose bcryptjs jsonwebtoken multer
+// models/User.js
+const mongoose = require('mongoose');
+
+const UserSchema = new mongoose.Schema({
+    username: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+});
+
+module.exports = mongoose.model('User', UserSchema);
+// models/Photo.js
+const mongoose = require('mongoose');
+
+const PhotoSchema = new mongoose.Schema({
+    url: { type: String, required: true },
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    votes: { type: Number, default: 0 },
+});
+
+module.exports = mongoose.model('Photo', PhotoSchema);
+// models/Vote.js
+const mongoose = require('mongoose');
+
+const VoteSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    photoId: { type: mongoose.Schema.Types.ObjectId, ref: 'Photo', required: true },
+    voteDate: { type: Date, default: Date.now }
+});
+
+module.exports = mongoose.model('Vote', VoteSchema);
+// routes/auth.js
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+const router = express.Router();
+const JWT_SECRET = 'your_jwt_secret_key';
+
+// 注册
+router.post('/register', async (req, res) => {
+    const { username, password } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    try {
+        const newUser = new User({ username, password: hashedPassword });
+        await newUser.save();
+        res.status(201).json({ message: 'User registered successfully' });
+    } catch (error) {
+        res.status(400).json({ error: 'Username already exists' });
+    }
+});
+
+// 登录
+router.post('/login', async (req, res) => {
+    const { username, password } = req.body;
+
+    try {
+        const user = await User.findOne({ username });
+        if (!user) return res.status(400).json({ error: 'User not found' });
+
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        if (!isPasswordValid) return res.status(400).json({ error: 'Invalid password' });
+
+        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '1h' });
+        res.json({ token });
+    } catch (error) {
+        res.status(500).json({ error: 'Login error' });
+    }
+});
+
+module.exports = router;
+// routes/photo.js
+const express = require('express');
+const multer = require('multer');
+const Photo = require('../models/Photo');
+const Vote = require('../models/Vote');
+const jwt = require('jsonwebtoken');
+
+const router = express.Router();
+const JWT_SECRET = 'your_jwt_secret_key';
+const upload = multer({ dest: 'uploads/' }); // 照片存储位置
+
+// 上传照片
+router.post('/upload', upload.single('photo'), async (req, res) => {
+    const token = req.headers.authorization.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    
+    try {
+        const newPhoto = new Photo({ url: req.file.path, uploadedBy: decoded.userId });
+        await newPhoto.save();
+        res.status(201).json({ message: 'Photo uploaded successfully' });
+    } catch (error) {
+        res.status(500).json({ error: 'Photo upload error' });
+    }
+});
+
+// 投票
+router.post('/vote/:photoId', async (req, res) => {
+    const { photoId } = req.params;
+    const token = req.headers.authorization.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    try {
+        // 检查用户是否已为该照片投票
+        const existingVote = await Vote.findOne({ userId: decoded.userId, photoId });
+        if (existingVote) return res.status(400).json({ error: 'You have already voted for this photo' });
+
+        // 创建投票记录并更新照片得票数
+        await Vote.create({ userId: decoded.userId, photoId });
+        await Photo.findByIdAndUpdate(photoId, { $inc: { votes: 1 } });
+        
+        res.json({ message: 'Vote submitted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: 'Voting error' });
+    }
+});
+
+module.exports = router;
+// server.js
+const express = require('express');
+const mongoose = require('mongoose');
+const authRoutes = require('./routes/auth');
+const photoRoutes = require('./routes/photo');
+
+const app = express();
+const PORT = 5000;
+
+// 连接MongoDB
+mongoose.connect('mongodb://localhost:27017/photo_voting', { useNewUrlParser: true, useUnifiedTopology: true })
+    .then(() => console.log('MongoDB connected'))
+    .catch((error) => console.error('MongoDB connection error:', error));
+
+app.use(express.json());
+app.use('/auth', authRoutes);
+app.use('/photo', photoRoutes);
+
+app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+});
+node server.js
